@@ -1,0 +1,5 @@
+number_of_clients: 5
+fl_rounds: 10
+fedprox_mu: 0.01
+anomaly_threshold: 2.5
+random_seed: 42

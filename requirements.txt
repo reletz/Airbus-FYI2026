@@ -1,0 +1,9 @@
+flwr
+torch
+tenseal
+streamlit
+plotly
+numpy
+scipy
+scikit-learn
+pyyaml
