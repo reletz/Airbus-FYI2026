@@ -1,5 +1,7 @@
 number_of_clients: 5
 fl_rounds: 10
 fedprox_mu: 0.01
-anomaly_threshold: 2.5
+anomaly_threshold: 0.5
 random_seed: 42
+n_channels: 1 # MVP, upgrade to 62 later
+gauge_factor: 5.64

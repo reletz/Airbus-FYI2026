@@ -39,33 +39,30 @@ Output each file's full content clearly labeled.
 ## PROMPT 1 — Module 1: Data Generator
 
 ```
-You are building the data simulation module for Carbon Sentinel, a federated learning system for aircraft structural health monitoring.
-
 Context:
-- We have no real sensor data, so we simulate strain sensor readings for a fleet of aircraft
-- Each aircraft has different characteristics (type, age, routes) making their data non-i.i.d
-- Sensors measure structural strain (von Mises stress proxy) at 62 points on the aircraft body
-- We need to be able to inject anomalies for demo purposes
+- MVP: 1 rGO sensor channel (not 62)
+- Physical measurement: R0_ohm, R_ohm, load_N, temperature_C, humidity_pct
+- strain computed at preprocessing: epsilon = (R - R0) / (GF * R0), GF=5.64
+- Binary label: 0=normal, 1=anomali
 
-Create the file: data/generator.py
+Create: data/generator.py
 
-It should contain a class AircraftDataGenerator with the following:
+Class AircraftDataGenerator:
+- 3 profiles: NarrowBodyShortHaul, WideBodyLongHaul, RepairedAircraft
+  - differ in: strain amplitude, frequency, noise level
+- generate_flight(profile, n_timesteps=500) → np.ndarray (n_timesteps, 1)
+- inject_anomaly(flight_data, anomaly_type) → np.ndarray (n_timesteps, 1)
+  - types: "crack" (spike), "overload" (sustained high), "drift" (gradual increase)
+- generate_dataset(profile, n_flights=50, anomaly_rate=0.1)
+  → list of ((n_timesteps, 1), label) tuples, label is 0 or 1
 
-1. Aircraft profiles — define at least 3 distinct profiles:
-   - NarrowBodyShortHaul: A320-type, many pressurization cycles, high frequency low-amplitude strain
-   - WideBodyLongHaul: A350-type, sustained cruise loads, lower frequency high-amplitude strain
-   - RepairedAircraft: Slightly altered stiffness in one wing section, asymmetric strain pattern
+Use: numpy, scipy only.
 
-2. Method generate_flight(profile, n_timesteps=500) — returns a numpy array of shape (n_timesteps, 62) simulating one flight's sensor readings based on the profile's characteristics
+__main__ block:
+- Generate all 3 profiles, print shape + basic stats
+- Save sample CSV: timestamp, strain, label → data/sample.csv
 
-3. Method inject_anomaly(flight_data, anomaly_type) — takes a flight array and injects one of:
-   - "crack": sudden spike in a cluster of sensors
-   - "overload": sustained elevated readings across all sensors
-   - "drift": gradual increase in one wing section over time
-
-4. Method generate_dataset(profile, n_flights=50, anomaly_rate=0.1) — returns a list of (flight_data, label) tuples where label is 0 (normal) or 1 (anomaly)
-
-Use only numpy and scipy. Add clear docstrings. Include a __main__ block that generates sample data for all 3 profiles and prints shape + basic stats.
+Next: output feeds directly into clients/fl_client.py as (n_timesteps, 1) tensor.
 ```
 
 ---
@@ -73,35 +70,35 @@ Use only numpy and scipy. Add clear docstrings. Include a __main__ block that ge
 ## PROMPT 2 — Module 2: FL Clients
 
 ```
-You are building the federated learning client module for Carbon Sentinel.
-
 Context:
-- Each aircraft is a FL client with its own local dataset
-- We use Personalized FedAvg: each aircraft fine-tunes the global model on its own data
-- The local model is a simple 1D CNN or LSTM that takes a flight's strain readings and classifies it as normal (0) or anomaly (1)
-- Framework: Flower (flwr) for FL, PyTorch for the model
+- Input shape changed: (batch, timesteps, 1) — single rGO channel
+- Binary classification: 0=normal, 1=anomali
+- Loss: BCEWithLogitsLoss, output: 1 neuron (no Softmax)
 
-Create two files:
+Create: clients/model.py
 
---- FILE 1: clients/model.py ---
-Define a PyTorch model class StrainClassifier:
-- Input: tensor of shape (batch, timesteps, 62) — strain readings from one flight
-- Architecture: 2-layer 1D CNN → GlobalAvgPool → 2-layer MLP → output (2 classes)
-- Include a train_one_epoch(model, dataloader, optimizer, criterion) function
-- Include an evaluate(model, dataloader) function that returns loss and accuracy
+Class StrainClassifier(nn.Module):
+- Input: (batch, timesteps, 1)
+- Architecture: 2x Conv1d → GlobalAvgPool → 2x Linear → output (1,)
+- train_one_epoch(model, dataloader, optimizer, criterion) → avg loss
+- evaluate(model, dataloader) → loss, accuracy, precision, recall
 
---- FILE 2: clients/fl_client.py ---
-Define a Flower client class CarbonClient(fl.client.NumPyClient):
-- Constructor takes: client_id, local_dataset, config
-- Implement get_parameters() — return model weights as numpy arrays
-- Implement fit(parameters, config) — 
-    1. Load global parameters into local model
-    2. Fine-tune for config["local_epochs"] epochs on local data
-    3. Return updated parameters + metrics
-- Implement evaluate(parameters, config) — evaluate on local test set, return loss + accuracy
-- Personalization: after loading global parameters, always fine-tune before returning — this is the Personalized FedAvg behavior
+Create: clients/fl_client.py
 
-Use flwr and torch. Add clear comments explaining the personalization step. Include a simulate_client(client_id, profile_name) helper function that creates a CarbonClient with generated data for demo purposes.
+Class CarbonClient(fl.client.NumPyClient):
+- get_parameters(): return model weights as numpy arrays
+- fit(parameters, config):
+  1. load global parameters
+  2. fine-tune local_epochs on local data (Personalized FedAvg)
+  3. return updated parameters + metrics
+- evaluate(parameters, config): return loss + accuracy
+
+Helper: simulate_client(client_id, profile_name) → CarbonClient with generated data
+
+Use: torch, flwr.
+
+Next: flat weight vector from get_parameters() passed to
+security/encryption.py encrypt_update().
 ```
 
 ---

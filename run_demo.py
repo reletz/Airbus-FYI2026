@@ -24,6 +24,13 @@ try:
 except Exception as e:
     raise ImportError("Missing security module. Ensure security/ exists.") from e
 
+try:
+    from security.encryption import setup_tenseal_context, encrypt_update, decrypt_update
+except Exception:
+    setup_tenseal_context = None
+    encrypt_update = None
+    decrypt_update = None
+
 from pathlib import Path
 
 
@@ -61,7 +68,7 @@ def load_config(path: str = "config.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
+def run_demo(attack: bool = False, cfg_path: str = "config.yaml", no_encrypt: bool = False):
     cfg = load_config(cfg_path)
     n_clients = int(cfg.get("number_of_clients", 5))
     n_rounds = int(cfg.get("fl_rounds", 10))
@@ -83,11 +90,22 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
     rounds_flagged = []
     trust_history = []
     low_trust_counts = {c.client_id: 0 for c in clients}
+    plaintext_norm_history = []
+    encrypted_norm_history = []
+
+    encryption_enabled = not no_encrypt
+    public_ctx = None
+    secret_ctx = None
+    if encryption_enabled:
+        if setup_tenseal_context is None or encrypt_update is None or decrypt_update is None:
+            raise ImportError("Encryption requested but security.encryption is unavailable. Use --no-encrypt to skip.")
+        public_ctx, secret_ctx = setup_tenseal_context()
 
     for r in range(1, n_rounds + 1):
         logger.info("Round %d/%d", r, n_rounds)
         # Each client fine-tunes locally starting from global params
         client_updates = []
+        encrypted_updates = []
         client_weights = []
         client_infos = []
 
@@ -103,7 +121,15 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
             if attack and i == 0:
                 update = byzantine_attack(update, scale=10.0)
 
-            client_updates.append(update)
+            if encryption_enabled:
+                enc_update = encrypt_update(public_ctx, update)
+                encrypted_updates.append(enc_update)
+                # FLTrust compatibility: decrypt at aggregator before trust scoring
+                dec_update = decrypt_update(secret_ctx, enc_update)
+                client_updates.append(dec_update)
+            else:
+                client_updates.append(update)
+
             client_weights.append(num_examples)
             client_infos.append({"client_id": c.client_id, "num_examples": num_examples, **(metrics or {})})
 
@@ -134,6 +160,16 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
 
         # Aggregate using FLTrust weighted average of updates
         agg_update = fltrust_aggregate([u for u in client_updates], scores)
+        plaintext_norm_history.append(float(np.linalg.norm(agg_update)))
+
+        if encryption_enabled:
+            enc_agg = encrypted_updates[0]
+            for enc in encrypted_updates[1:]:
+                enc_agg += enc
+            dec_agg = decrypt_update(secret_ctx, enc_agg) / max(1, len(encrypted_updates))
+            encrypted_norm_history.append(float(np.linalg.norm(dec_agg)))
+        else:
+            encrypted_norm_history.append(float(np.linalg.norm(agg_update)))
 
         # Update global parameters
         new_global_flat = global_flat + agg_update
@@ -161,6 +197,9 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
         "trust_history": trust_history,
         "final_accuracies": final_accuracies,
         "low_trust_counts": low_trust_counts,
+        "plaintext_norm_history": plaintext_norm_history,
+        "encrypted_norm_history": encrypted_norm_history,
+        "encryption_enabled": encryption_enabled,
     }
 
     out_path = Path("demo") / "results.json"
@@ -182,9 +221,10 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--attack", action="store_true", help="Inject one Byzantine client for security demo")
+    parser.add_argument("--no-encrypt", action="store_true", help="Disable encryption for faster development runs")
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     args = parser.parse_args()
-    run_demo(attack=args.attack, cfg_path=args.config)
+    run_demo(attack=args.attack, cfg_path=args.config, no_encrypt=args.no_encrypt)
 
 
 if __name__ == "__main__":

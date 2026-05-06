@@ -2,25 +2,29 @@
 
 ```
 Context:
-- data/generator.py produces simulated (n_timesteps, 62) strain arrays
-- Replace simulation with real rGO sensor data via Serial (USB)
-- Microcontroller sends comma-separated values, 62 channels per line
+- MVP: 1 rGO sensor channel via Serial (USB)
+- Microcontroller sends one float per line (resistance value in Ohm)
+- strain formula: epsilon = (R - R0) / (GF * R0), GF=5.64
+- Output must match generator.py shape: (buffer_size, 1)
 
 Create: hardware/daq_reader.py
 
 Class SensorDAQ:
-- __init__(port, baud_rate, gauge_factor=5.64, base_resistance=1000.0)
-- read_live_stream(buffer_size=500) → np.ndarray (buffer_size, 62)
-  - strain formula: epsilon = (delta_R / R0) / GF
-  - handle SerialException and malformed CSV lines with logging, not crash
+- __init__(port, baud_rate=9600, gauge_factor=5.64, base_resistance=1000.0)
+- calibrate(n_samples=100): read n_samples at no-load, set self.R0 as mean
+- read_live_stream(buffer_size=500) → np.ndarray (buffer_size, 1)
+  - handle SerialException and non-float lines with logging, not crash
+- log_to_csv(buffer, filepath): save timestamp + R_ohm + strain to CSV
+  - columns: timestamp, R_ohm, strain
 - Use: numpy, pyserial
 
 __main__ block:
-- Mock serial using a DummySerial class (no unittest.mock dependency)
-- Print shape + first 3 rows to verify
+- DummySerial class simulating single-channel resistance values
+- calibrate() → read_live_stream(100) → log_to_csv()
+- Print shape + first 3 rows
 
-Next: output of read_live_stream() feeds directly into clients/fl_client.py
-as a drop-in replacement for generator.py output.
+Next: read_live_stream() output is drop-in replacement for
+generator.py generate_flight() output.
 ```
 
 ---

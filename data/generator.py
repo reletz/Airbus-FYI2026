@@ -1,151 +1,104 @@
-"""Data generator for Carbon Sentinel.
+"""Single-channel rGO strain data generator for Carbon Sentinel.
 
-Simulates strain sensor readings (62 sensors) for different aircraft profiles
-and can inject demo anomalies: crack, overload, drift.
-
-Uses only numpy and scipy.
+MVP assumptions:
+- One sensor channel per aircraft flight.
+- Strain is simulated directly and returned as shape (timesteps, 1).
 """
+
+from __future__ import annotations
+
+from pathlib import Path
 from typing import List, Tuple
+
 import numpy as np
 from scipy import signal
 
 
 class AircraftDataGenerator:
-    """Generate synthetic flight strain data for several aircraft profiles.
+    """Generate single-channel synthetic strain flights for aircraft profiles."""
 
-    Each flight is an array of shape (n_timesteps, 62), representing a von
-    Mises-like strain proxy at 62 sensor locations.
-    """
-
-    SENSOR_COUNT = 62
+    GF = 5.64
 
     def __init__(self, seed: int = 42):
         self.rng = np.random.default_rng(seed)
-
-        # Profile templates: (base_freq, base_amp, noise_std, temporal_band)
         self.profiles = {
-            "NarrowBodyShortHaul": {
-                "freq": 5.0,  # higher-frequency content
-                "amp": 0.8,  # low amplitude
-                "noise": 0.02,
-                "temporal_band": (1, 8),
-            },
-            "WideBodyLongHaul": {
-                "freq": 1.2,  # lower-frequency content
-                "amp": 1.6,  # higher amplitude
-                "noise": 0.03,
-                "temporal_band": (0.5, 3),
-            },
-            "RepairedAircraft": {
-                "freq": 3.0,
-                "amp": 1.0,
-                "noise": 0.025,
-                "temporal_band": (1, 6),
-                "asymmetry_gain": 1.25,  # altered stiffness section
-            },
+            "NarrowBodyShortHaul": {"amp": 4.0e-4, "freq": 4.0, "noise": 2.0e-5},
+            "WideBodyLongHaul": {"amp": 7.0e-4, "freq": 1.6, "noise": 1.5e-5},
+            "RepairedAircraft": {"amp": 5.0e-4, "freq": 2.8, "noise": 3.0e-5},
         }
 
     def generate_flight(self, profile: str, n_timesteps: int = 500) -> np.ndarray:
-        """Generate a single flight time-series for `profile`.
-
-        Returns:
-            flight: np.ndarray shape (n_timesteps, 62)
-        """
+        """Generate one flight as a strain array shaped (n_timesteps, 1)."""
         if profile not in self.profiles:
             raise ValueError(f"Unknown profile: {profile}")
 
         p = self.profiles[profile]
-        t = np.linspace(0, 1.0, n_timesteps)
+        t = np.linspace(0.0, 1.0, n_timesteps)
 
-        # sensor-wise variation to simulate non-i.i.d behaviour
-        sensor_offsets = self.rng.normal(0.0, 0.05, size=(self.SENSOR_COUNT,))
-        flight = np.zeros((n_timesteps, self.SENSOR_COUNT), dtype=float)
+        phase = self.rng.uniform(0.0, 2.0 * np.pi)
+        base = (
+            p["amp"] * np.sin(2.0 * np.pi * p["freq"] * t + phase)
+            + 0.25 * p["amp"] * np.sin(2.0 * np.pi * (p["freq"] * 2.1) * t + phase * 0.6)
+        )
 
-        for s in range(self.SENSOR_COUNT):
-            # per-sensor frequency and amplitude
-            freq = p["freq"] * (1.0 + sensor_offsets[s])
-            amp = p["amp"] * (1.0 + sensor_offsets[s] * 0.5)
+        b, a = signal.butter(2, 0.18)
+        smooth = signal.filtfilt(b, a, base)
 
-            # combine a few harmonics for realism
-            phase = self.rng.uniform(0, 2 * np.pi)
-            signal_raw = (
-                amp * np.sin(2 * np.pi * freq * t + phase)
-                + 0.3 * amp * np.sin(2 * np.pi * freq * 2.3 * t + phase * 0.7)
-            )
-
-            # low-pass / smoothing to emulate structural dynamics
-            b, a = signal.butter(2, 0.2)
-            smooth = signal.filtfilt(b, a, signal_raw)
-
-            flight[:, s] = smooth
-
-        # Add profile-specific asymmetric effect for RepairedAircraft
         if profile == "RepairedAircraft":
-            # choose a wing section (sensor block) to modify
-            damaged_idx = np.arange(10, 16)
-            flight[:, damaged_idx] *= p.get("asymmetry_gain", 1.2)
+            # Slight asymmetry-like behavior in one section of the flight.
+            start = int(0.35 * n_timesteps)
+            end = int(0.6 * n_timesteps)
+            smooth[start:end] *= 1.12
 
-            # add a small static offset to make asymmetry visible
-            flight[:, damaged_idx] += 0.05
-
-        # Add noise
-        noise = self.rng.normal(0.0, p["noise"], size=flight.shape)
-        flight += noise
-
-        return flight.astype(float)
+        noisy = smooth + self.rng.normal(0.0, p["noise"], size=n_timesteps)
+        return noisy.reshape(-1, 1).astype(float)
 
     def inject_anomaly(self, flight_data: np.ndarray, anomaly_type: str) -> np.ndarray:
-        """Inject an anomaly into `flight_data` and return a new array.
+        """Inject crack/overload/drift anomaly into shape (timesteps, 1) data."""
+        flight = np.asarray(flight_data, dtype=float).copy()
+        if flight.ndim != 2 or flight.shape[1] != 1:
+            raise ValueError(f"Expected shape (timesteps, 1), got {flight.shape}")
 
-        anomaly_type in {"crack", "overload", "drift"}.
-        """
-        flight = flight_data.copy()
         n_timesteps = flight.shape[0]
 
         if anomaly_type == "crack":
-            # sudden spike in a small cluster of sensors
             t0 = int(self.rng.uniform(0.1, 0.9) * n_timesteps)
-            duration = max(1, int(0.01 * n_timesteps))
-            cluster_center = self.rng.integers(6, self.SENSOR_COUNT - 6)
-            cluster = np.arange(cluster_center - 3, cluster_center + 3)
-            spike = 3.0 * np.std(flight) + self.rng.normal(0, 0.1)
-            flight[t0 : t0 + duration, cluster] += spike
-
+            duration = max(2, int(0.015 * n_timesteps))
+            spike = 4.0 * np.std(flight)
+            flight[t0 : t0 + duration, 0] += spike
         elif anomaly_type == "overload":
-            # sustained elevated readings across all sensors for a segment
-            start = int(self.rng.uniform(0.05, 0.6) * n_timesteps)
-            length = int(self.rng.uniform(0.1, 0.4) * n_timesteps)
-            boost = 1.5 * np.mean(np.abs(flight))
-            flight[start : start + length, :] += boost
-
+            start = int(self.rng.uniform(0.1, 0.55) * n_timesteps)
+            length = int(self.rng.uniform(0.12, 0.35) * n_timesteps)
+            level = 1.8 * np.mean(np.abs(flight))
+            flight[start : start + length, 0] += level
         elif anomaly_type == "drift":
-            # gradual increase in one wing section over time
-            wing_idx = np.arange(2, 8)  # small wing section
-            ramp = np.linspace(0, 0.8 * np.mean(np.abs(flight)), n_timesteps)
-            # apply to selected sensors
-            flight[:, wing_idx] += ramp[:, None]
-
+            ramp = np.linspace(0.0, 1.2 * np.mean(np.abs(flight)), n_timesteps)
+            flight[:, 0] += ramp
         else:
-            raise ValueError(f"Unknown anomaly type: {anomaly_type}")
+            raise ValueError(f"Unknown anomaly_type: {anomaly_type}")
 
         return flight
 
-    def generate_dataset(self, profile: str, n_flights: int = 50, anomaly_rate: float = 0.1) -> List[Tuple[np.ndarray, int]]:
-        """Generate a dataset of flights for `profile`.
+    def generate_dataset(
+        self,
+        profile: str,
+        n_flights: int = 50,
+        anomaly_rate: float = 0.1,
+    ) -> List[Tuple[np.ndarray, int]]:
+        """Generate list of `(flight, label)` tuples with binary anomaly labels."""
+        dataset: List[Tuple[np.ndarray, int]] = []
+        anomaly_types = ["crack", "overload", "drift"]
 
-        Returns a list of tuples (flight_array, label) where label is 0 (normal) or 1 (anomaly).
-        """
-        dataset = []
-        for i in range(n_flights):
+        for _ in range(n_flights):
             flight = self.generate_flight(profile)
             if self.rng.random() < anomaly_rate:
-                # choose anomaly type randomly
-                a_type = self.rng.choice(["crack", "overload", "drift"])
+                a_type = str(self.rng.choice(anomaly_types))
                 flight = self.inject_anomaly(flight, a_type)
                 label = 1
             else:
                 label = 0
             dataset.append((flight, label))
+
         return dataset
 
 
@@ -155,10 +108,27 @@ if __name__ == "__main__":
 
     for prof in profiles:
         ds = gen.generate_dataset(prof, n_flights=10, anomaly_rate=0.2)
-        shapes = [f[0].shape for f in ds]
-        labels = [f[1] for f in ds]
-        all_data = np.stack([f[0] for f in ds], axis=0)  # (n_flights, T, S)
+        labels = np.array([label for _, label in ds], dtype=int)
+        stacked = np.stack([flight for flight, _ in ds], axis=0)
         print(f"Profile: {prof}")
-        print(f"  Flights: {len(ds)}, shapes sample: {shapes[0]}")
-        print(f"  Labels: {sum(labels)} anomalies out of {len(labels)}")
-        print(f"  Global mean: {all_data.mean():.4f}, std: {all_data.std():.4f}\n")
+        print(f"  flights={len(ds)}, sample_shape={ds[0][0].shape}")
+        print(f"  anomalies={int(labels.sum())}/{len(labels)}")
+        print(f"  mean={stacked.mean():.6e}, std={stacked.std():.6e}")
+
+    # Save sample CSV from one generated flight
+    sample_flight, sample_label = gen.generate_dataset("NarrowBodyShortHaul", n_flights=1, anomaly_rate=0.5)[0]
+    out_path = Path("data") / "sample.csv"
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    timestamps = np.arange(sample_flight.shape[0], dtype=int)
+    labels_col = np.full(sample_flight.shape[0], sample_label, dtype=int)
+    csv_data = np.column_stack([timestamps, sample_flight[:, 0], labels_col])
+    np.savetxt(
+        out_path,
+        csv_data,
+        delimiter=",",
+        header="timestamp,strain,label",
+        comments="",
+        fmt=["%d", "%.8e", "%d"],
+    )
+    print(f"Saved sample CSV: {out_path}")
