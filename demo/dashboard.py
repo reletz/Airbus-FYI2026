@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
+import json
+from pathlib import Path
 
 from typing import List
 
@@ -52,20 +54,36 @@ def simulate_training(n_clients: int, n_rounds: int, attack=False, seed: int = 4
     return global_acc, local_acc, trust_scores, drift_history
 
 
+def load_demo_results(results_path: str = "demo/results.json"):
+    path = Path(results_path)
+    if not path.exists():
+        return None
+    try:
+        with path.open("r") as handle:
+            return json.load(handle)
+    except Exception:
+        return None
+
+
 def plot_fleet_overview(df: pd.DataFrame, flagged: List[str] = None):
     df2 = df.copy()
     if flagged is None:
         df2["status"] = "Normal"
     else:
         df2["status"] = df2["client_id"].apply(lambda x: "Anomaly" if x in flagged else "Normal")
-    color_map = {"Normal": "green", "Anomaly": "red"}
     st.write("**Fleet Overview**")
-    st.dataframe(df2)
+    styled = df2.style.apply(
+        lambda row: ["background-color: #dcfce7" if row["status"] == "Normal" else "background-color: #fee2e2"] * len(row),
+        axis=1,
+    )
+    st.dataframe(styled, use_container_width=True)
 
 
 def main():
     st.title("Carbon Sentinel")
     st.markdown("Detect anomalies in aircraft strain sensor data with a privacy-preserving FL demo.")
+
+    demo_results = load_demo_results()
 
     # Sidebar controls
     with st.sidebar:
@@ -80,9 +98,19 @@ def main():
 
     if run_button:
         with st.spinner("Running demo simulation..."):
-            global_acc, local_acc, trust_scores, drift_history = simulate_training(
-                n_clients, n_rounds, attack=attack_toggle
-            )
+            if demo_results is not None:
+                drift_history = demo_results.get("drift_history", [])
+                trust_history = demo_results.get("trust_history", [])
+                rounds = list(range(1, len(drift_history) + 1)) if drift_history else list(range(1, n_rounds + 1))
+                trust_scores = trust_history[-1] if trust_history else np.clip(np.random.default_rng(42).normal(0.8, 0.1, size=n_clients), 0, 1)
+                global_acc, local_acc, _, _ = simulate_training(n_clients, n_rounds, attack=attack_toggle)
+                if "final_accuracies" in demo_results:
+                    st.caption("Loaded saved demo results from demo/results.json")
+            else:
+                global_acc, local_acc, trust_scores, drift_history = simulate_training(
+                    n_clients, n_rounds, attack=attack_toggle
+                )
+                rounds = list(range(1, n_rounds + 1))
 
             # Determine flagged clients (if anomaly toggle) randomly
             rng = np.random.default_rng(1)
@@ -98,7 +126,6 @@ def main():
                 plot_fleet_overview(fleet_df, flagged_clients)
 
             # Training progress charts
-            rounds = list(range(1, n_rounds + 1))
             acc_df = pd.DataFrame({"round": rounds, "global_acc": global_acc})
             fig_global = px.line(acc_df, x="round", y="global_acc", title="Global Accuracy per Round")
             with col2:

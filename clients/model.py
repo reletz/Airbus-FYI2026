@@ -1,5 +1,5 @@
 """PyTorch model and training utilities for Carbon Sentinel clients."""
-from typing import Tuple
+from typing import Optional, Tuple
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
@@ -41,8 +41,16 @@ class StrainClassifier(nn.Module):
         return out
 
 
-def train_one_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.optim.Optimizer, criterion: nn.Module, device: str = "cpu") -> float:
+def train_one_epoch(
+    model: nn.Module,
+    dataloader: DataLoader,
+    optimizer: torch.optim.Optimizer,
+    criterion: Optional[nn.Module] = None,
+    device: str = "cpu",
+) -> float:
     """Train model for one epoch and return average loss."""
+    if criterion is None:
+        criterion = nn.CrossEntropyLoss()
     model.train()
     total_loss = 0.0
     n = 0
@@ -59,8 +67,15 @@ def train_one_epoch(model: nn.Module, dataloader: DataLoader, optimizer: torch.o
     return total_loss / max(1, n)
 
 
-def evaluate(model: nn.Module, dataloader: DataLoader, criterion: nn.Module, device: str = "cpu") -> Tuple[float, float]:
+def evaluate(
+    model: nn.Module,
+    dataloader: DataLoader,
+    criterion: Optional[nn.Module] = None,
+    device: str = "cpu",
+) -> Tuple[float, float]:
     """Evaluate model and return (loss, accuracy)."""
+    if criterion is None:
+        criterion = nn.CrossEntropyLoss()
     model.eval()
     total_loss = 0.0
     correct = 0

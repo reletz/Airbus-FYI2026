@@ -82,6 +82,7 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
     drift_history = []
     rounds_flagged = []
     trust_history = []
+    low_trust_counts = {c.client_id: 0 for c in clients}
 
     for r in range(1, n_rounds + 1):
         logger.info("Round %d/%d", r, n_rounds)
@@ -127,6 +128,10 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
             rounds_flagged.append(r)
             logger.warning("Round %d: flagged clients %s", r, flagged)
 
+        for i, score in enumerate(scores):
+            if score < 0.3:
+                low_trust_counts[clients[i].client_id] += 1
+
         # Aggregate using FLTrust weighted average of updates
         agg_update = fltrust_aggregate([u for u in client_updates], scores)
 
@@ -155,6 +160,7 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
         "rounds_flagged": rounds_flagged,
         "trust_history": trust_history,
         "final_accuracies": final_accuracies,
+        "low_trust_counts": low_trust_counts,
     }
 
     out_path = Path("demo") / "results.json"
@@ -162,6 +168,14 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml"):
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
 
+    consistently_low_trust = [client_id for client_id, count in low_trust_counts.items() if count >= max(1, n_rounds // 3)]
+
+    print("Final report")
+    print("Per-aircraft final accuracy:")
+    for client_id, accuracy in final_accuracies.items():
+        print(f"  {client_id}: {accuracy:.4f}")
+    print(f"Rounds flagged for drift: {rounds_flagged}")
+    print(f"Consistently low-trust clients: {consistently_low_trust if consistently_low_trust else 'none'}")
     print("Run complete. Results saved to", str(out_path))
 
 

@@ -78,7 +78,7 @@ class CarbonStrategy(fl.server.strategy.FedAvg):
         return params
 
 
-def get_drift_report(drift_history: List[float], threshold: float) -> Dict[str, Any]:
+def get_drift_report(drift_history: List[float], threshold: float = 0.0) -> Dict[str, Any]:
     """Compute a simple drift report.
 
     Returns max, mean, and list of rounds (1-based) where drift exceeded threshold.
@@ -97,7 +97,7 @@ def run_server(config: Dict[str, Any]):
         config: dict containing at least `fl_rounds` (int) and optional `drift_threshold` (float).
     """
     rounds = int(config.get("fl_rounds", 10))
-    drift_threshold = float(config.get("drift_threshold", 1e-3))
+    drift_threshold = float(config.get("drift_threshold", config.get("anomaly_threshold", 2.5)))
 
     # Initialize strategy with drift threshold
     strategy = CarbonStrategy(drift_threshold=drift_threshold)
