@@ -13,43 +13,54 @@ class MahalanobisDetector:
 
     Detects outliers in multivariate strain data by computing the distance
     of each sample from the baseline (normal) distribution.
+    Supports variable sensor counts (1 for MVP, 62 for full deployment).
     """
 
     def __init__(self):
         self.mean_: np.ndarray | None = None
         self.inv_cov_: np.ndarray | None = None
+        self.n_features_: int | None = None
 
     def fit(self, baseline_data: np.ndarray) -> None:
         """Fit detector on baseline (normal) strain data.
 
         Args:
-            baseline_data: (n_samples, 62) array of normal strain measurements.
+            baseline_data: (n_samples, n_features) array of normal strain measurements.
         """
         baseline_data = np.asarray(baseline_data, dtype=float)
-        if baseline_data.ndim != 2 or baseline_data.shape[1] != 62:
-            raise ValueError(f"Expected shape (n, 62), got {baseline_data.shape}")
+        if baseline_data.ndim == 1:
+            baseline_data = baseline_data.reshape(-1, 1)
+        if baseline_data.ndim != 2:
+            raise ValueError(f"Expected 2D array, got shape {baseline_data.shape}")
 
+        self.n_features_ = baseline_data.shape[1]
         self.mean_ = baseline_data.mean(axis=0)
-        cov = np.cov(baseline_data.T)  # (62, 62) covariance matrix
-        self.inv_cov_ = np.linalg.pinv(cov)  # pseudo-inverse for numerical stability
+        
+        if self.n_features_ == 1:
+            # For single feature, covariance is just variance
+            var = np.var(baseline_data, axis=0)
+            self.inv_cov_ = np.array([[1.0 / (var[0] + 1e-10)]])
+        else:
+            cov = np.cov(baseline_data.T)
+            self.inv_cov_ = np.linalg.pinv(cov)
 
     def predict_score(self, test_data: np.ndarray) -> np.ndarray:
         """Compute Mahalanobis distance for each test sample.
 
         Args:
-            test_data: (n_samples, 62) strain measurements.
+            test_data: (n_samples, n_features) strain measurements.
 
         Returns:
             (n_samples,) array of Mahalanobis distances (lower = more normal).
         """
-        if self.mean_ is None or self.inv_cov_ is None:
+        if self.mean_ is None or self.inv_cov_ is None or self.n_features_ is None:
             raise RuntimeError("Detector not fitted. Call fit() first.")
 
         test_data = np.asarray(test_data, dtype=float)
         if test_data.ndim == 1:
-            test_data = test_data.reshape(1, -1)
-        if test_data.shape[1] != 62:
-            raise ValueError(f"Expected shape (n, 62), got {test_data.shape}")
+            test_data = test_data.reshape(-1, self.n_features_)
+        if test_data.shape[1] != self.n_features_:
+            raise ValueError(f"Expected shape (n, {self.n_features_}), got {test_data.shape}")
 
         diff = test_data - self.mean_  # (n, 62)
         distances = np.sqrt(np.sum(diff @ self.inv_cov_ * diff, axis=1))

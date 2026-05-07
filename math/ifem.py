@@ -9,39 +9,42 @@ import numpy as np
 
 
 class ShapeSensing_iFEM:
-    """Reconstruct 2D wing displacement field from 62-point strain array."""
+    """Reconstruct 2D wing displacement field from strain array (supports variable sensor count)."""
 
-    def __init__(self, grid_size: int = 10):
+    def __init__(self, grid_size: int = 10, n_sensors: int = 62):
         """Initialize with transfer matrix for grid_size x grid_size displacement reconstruction.
 
         Args:
             grid_size: target reconstruction grid (e.g., 10x10 = 100 nodes).
+            n_sensors: number of input sensors (default 62, but supports 1 for MVP).
         """
         self.grid_size = int(grid_size)
         self.n_output = self.grid_size * self.grid_size
-        self.n_sensors = 62
+        self.n_sensors = int(n_sensors)
 
-        # Build a mock transfer matrix: pseudo-inverse mapping (62,) → (100,)
+        # Build a mock transfer matrix: pseudo-inverse mapping (n_sensors,) → (n_output,)
         # In reality, this would be derived from FEM and sensor calibration.
         # For demo: use SVD-based pseudo-inverse of a random tall matrix.
         np.random.seed(42)
         raw_matrix = np.random.randn(self.n_sensors, self.n_output)
-        self.T = np.linalg.pinv(raw_matrix)  # (100, 62) pseudo-inverse
+        self.T = np.linalg.pinv(raw_matrix)  # (n_output, n_sensors) pseudo-inverse
 
     def reconstruct_displacement(self, strain_array: np.ndarray) -> np.ndarray:
         """Reconstruct 2D displacement field from strain measurements.
 
         Args:
-            strain_array: (62,) strain vector at one timestep.
+            strain_array: (n_sensors,) strain vector at one timestep.
 
         Returns:
             (grid_size, grid_size) reconstructed displacement field.
         """
         strain_array = np.asarray(strain_array).ravel()
+        # Auto-adapt if sensor count doesn't match: rebuild transfer matrix
         if strain_array.shape[0] != self.n_sensors:
-            raise ValueError(
-                f"Expected strain array of shape ({self.n_sensors},), got {strain_array.shape}"
-            )
+            self.n_sensors = strain_array.shape[0]
+            np.random.seed(42)
+            raw_matrix = np.random.randn(self.n_sensors, self.n_output)
+            self.T = np.linalg.pinv(raw_matrix)
 
         # Apply transfer matrix to get nodal displacements
         displacements_flat = self.T @ strain_array  # (100,)

@@ -10,11 +10,12 @@ from typing import List, Tuple
 
 import numpy as np
 import torch
+from torch.utils.data import DataLoader
 import yaml
 
 try:
-    from clients.model import StrainClassifier
-    from clients.fl_client import simulate_client, _get_parameters as client_get_parameters
+    from clients.model import StrainClassifier, train_one_epoch
+    from clients.fl_client import simulate_client, _get_parameters as client_get_parameters, _set_parameters, LocalDataset
 except Exception as e:
     raise ImportError("Missing clients module. Run from repository root and ensure clients/ exists.") from e
 
@@ -77,6 +78,12 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml", no_encrypt: bo
     # Create simulated clients
     clients = [simulate_client(f"AC_{i}", "NarrowBodyShortHaul", n_flights=20, anomaly_rate=0.15, seed=42 + i) for i in range(n_clients)]
 
+    # Generate server's own clean dataset for trusted root
+    # (This represents a small, clean dataset kept by the server)
+    from data.generator import AircraftDataGenerator
+    server_gen = AircraftDataGenerator(seed=999)
+    server_dataset_clean = server_gen.generate_dataset("NarrowBodyShortHaul", n_flights=10, anomaly_rate=0.0)  # All normal
+    
     # Initialize global model
     device = "cpu"
     global_model = StrainClassifier()
@@ -135,15 +142,26 @@ def run_demo(attack: bool = False, cfg_path: str = "config.yaml", no_encrypt: bo
 
         client_updates = np.stack(client_updates, axis=0)
 
-        # Trusted update: for demo use mean of client updates excluding extreme norms
-        norms = np.linalg.norm(client_updates, axis=1)
-        median = np.median(norms)
-        # pick trusted indices with norm <= 2*median
-        trusted_idx = norms <= (2.0 * median + 1e-8)
-        if trusted_idx.sum() == 0:
-            trusted_update = client_updates.mean(axis=0)
-        else:
-            trusted_update = client_updates[trusted_idx].mean(axis=0)
+        # Compute trusted update from server's own clean dataset (FLTrust root-of-trust)
+        # Train server model on its own clean data and compute the update
+        server_model = StrainClassifier().to(device)
+        _set_parameters(server_model, global_params)
+        
+        # Create server dataset
+        from torch.utils.data import DataLoader
+        from clients.fl_client import LocalDataset
+        server_ds = LocalDataset(server_dataset_clean)
+        server_loader = DataLoader(server_ds, batch_size=8, shuffle=True)
+        server_optimizer = torch.optim.Adam(server_model.parameters(), lr=1e-3)
+        server_criterion = torch.nn.BCEWithLogitsLoss()
+        
+        # Train server model one epoch
+        train_one_epoch(server_model, server_loader, server_optimizer, server_criterion, device=device)
+        
+        # Get server update as the trusted root
+        server_params = [v.cpu().numpy() for v in server_model.state_dict().values()]
+        server_flat, _ = params_list_to_flat(server_params)
+        trusted_update = server_flat - global_flat
 
         scores = compute_trust_scores([u for u in client_updates], trusted_update)
         trust_history.append(scores)
